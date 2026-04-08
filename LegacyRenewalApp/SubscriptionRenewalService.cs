@@ -11,6 +11,7 @@ namespace LegacyRenewalApp
         private readonly IEnumerable<IDiscountRule> _discountRules;
         private readonly ITaxCalculator _taxCalculator;
         private readonly IFeeCalculator _feeCalculator;
+        private readonly IInvoiceFactory _invoiceFactory;
         
         public SubscriptionRenewalService()
             : this(new CustomerRepository(), 
@@ -24,7 +25,8 @@ namespace LegacyRenewalApp
                     new LoyaltyPointsDiscountRule()
                 },
                 new TaxCalculator(),
-                new FeeCalculator())
+                new FeeCalculator(),
+                new InvoiceFactory())
         {
         }
         
@@ -34,7 +36,8 @@ namespace LegacyRenewalApp
             IBillingGateway billingGateway,
             IEnumerable<IDiscountRule> discountRules,
             ITaxCalculator taxCalculator,
-            IFeeCalculator feeCalculator)
+            IFeeCalculator feeCalculator,
+            IInvoiceFactory invoiceFactory)
         {
             _customerRepository = customerRepository;
             _planRepository = planRepository;
@@ -42,6 +45,7 @@ namespace LegacyRenewalApp
             _discountRules = discountRules;
             _taxCalculator = taxCalculator;
             _feeCalculator = feeCalculator;
+            _invoiceFactory = invoiceFactory;
         }
         
         public RenewalInvoice CreateRenewalInvoice(
@@ -83,7 +87,7 @@ namespace LegacyRenewalApp
                 throw new InvalidOperationException("Inactive customers cannot renew subscriptions");
             }
 
-            decimal baseAmount = (plan.MonthlyPricePerSeat * seatCount * 12m) + plan.SetupFee;
+            decimal baseAmount = plan.CalculateBaseAmount(seatCount);
             decimal discountAmount = 0m;
             string notes = string.Empty;
 
@@ -122,24 +126,11 @@ namespace LegacyRenewalApp
                 notes += "minimum invoice amount applied; ";
             }
 
-            var invoice = new RenewalInvoice
-            {
-                InvoiceNumber = $"INV-{DateTime.UtcNow:yyyyMMdd}-{customerId}-{normalizedPlanCode}",
-                CustomerName = customer.FullName,
-                PlanCode = normalizedPlanCode,
-                PaymentMethod = normalizedPaymentMethod,
-                SeatCount = seatCount,
-                BaseAmount = Math.Round(baseAmount, 2, MidpointRounding.AwayFromZero),
-                DiscountAmount = Math.Round(discountAmount, 2, MidpointRounding.AwayFromZero),
-                SupportFee = Math.Round(supportFee, 2, MidpointRounding.AwayFromZero),
-                PaymentFee = Math.Round(paymentFee, 2, MidpointRounding.AwayFromZero),
-                TaxAmount = Math.Round(taxAmount, 2, MidpointRounding.AwayFromZero),
-                FinalAmount = Math.Round(finalAmount, 2, MidpointRounding.AwayFromZero),
-                Notes = notes.Trim(),
-                GeneratedAt = DateTime.UtcNow
-            };
+            var invoice = _invoiceFactory.Create(
+                customer, normalizedPlanCode, normalizedPaymentMethod, seatCount, 
+                baseAmount, discountAmount, supportFee, paymentFee, taxAmount, finalAmount, notes);
 
-            _billingGateway.SaveInvoice(invoice);
+            LegacyBillingGateway.SaveInvoice(invoice);
 
             if (!string.IsNullOrWhiteSpace(customer.Email))
             {
