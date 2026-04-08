@@ -9,6 +9,8 @@ namespace LegacyRenewalApp
         private readonly ISubscriptionPlanRepository _planRepository;
         private readonly IBillingGateway _billingGateway;
         private readonly IEnumerable<IDiscountRule> _discountRules;
+        private readonly ITaxCalculator _taxCalculator;
+        private readonly IFeeCalculator _feeCalculator;
         
         public SubscriptionRenewalService()
             : this(new CustomerRepository(), 
@@ -20,7 +22,9 @@ namespace LegacyRenewalApp
                     new LoyaltyDiscountRule(),
                     new TeamSizeDiscountRule(),
                     new LoyaltyPointsDiscountRule()
-                })
+                },
+                new TaxCalculator(),
+                new FeeCalculator())
         {
         }
         
@@ -28,12 +32,16 @@ namespace LegacyRenewalApp
             ICustomerRepository customerRepository, 
             ISubscriptionPlanRepository planRepository,
             IBillingGateway billingGateway,
-            IEnumerable<IDiscountRule> discountRules)
+            IEnumerable<IDiscountRule> discountRules,
+            ITaxCalculator taxCalculator,
+            IFeeCalculator feeCalculator)
         {
             _customerRepository = customerRepository;
             _planRepository = planRepository;
             _billingGateway = billingGateway;
             _discountRules = discountRules;
+            _taxCalculator = taxCalculator;
+            _feeCalculator = feeCalculator;
         }
         
         public RenewalInvoice CreateRenewalInvoice(
@@ -93,69 +101,17 @@ namespace LegacyRenewalApp
                 notes += "minimum discounted subtotal applied; ";
             }
 
-            decimal supportFee = 0m;
-            if (includePremiumSupport)
-            {
-                if (normalizedPlanCode == "START")
-                {
-                    supportFee = 250m;
-                }
-                else if (normalizedPlanCode == "PRO")
-                {
-                    supportFee = 400m;
-                }
-                else if (normalizedPlanCode == "ENTERPRISE")
-                {
-                    supportFee = 700m;
-                }
+            //OPŁATY DODATKOWE
+            var supportFeeResult = _feeCalculator.CalculateSupportFee(normalizedPlanCode, includePremiumSupport);
+            decimal supportFee = supportFeeResult.Amount;
+            notes += supportFeeResult.Note;
 
-                notes += "premium support included; ";
-            }
+            var paymentFeeResult = _feeCalculator.CalculatePaymentFee(normalizedPaymentMethod, subtotalAfterDiscount + supportFee);
+            decimal paymentFee = paymentFeeResult.Amount;
+            notes += paymentFeeResult.Note;
 
-            decimal paymentFee = 0m;
-            if (normalizedPaymentMethod == "CARD")
-            {
-                paymentFee = (subtotalAfterDiscount + supportFee) * 0.02m;
-                notes += "card payment fee; ";
-            }
-            else if (normalizedPaymentMethod == "BANK_TRANSFER")
-            {
-                paymentFee = (subtotalAfterDiscount + supportFee) * 0.01m;
-                notes += "bank transfer fee; ";
-            }
-            else if (normalizedPaymentMethod == "PAYPAL")
-            {
-                paymentFee = (subtotalAfterDiscount + supportFee) * 0.035m;
-                notes += "paypal fee; ";
-            }
-            else if (normalizedPaymentMethod == "INVOICE")
-            {
-                paymentFee = 0m;
-                notes += "invoice payment; ";
-            }
-            else
-            {
-                throw new ArgumentException("Unsupported payment method");
-            }
-
-            decimal taxRate = 0.20m;
-            if (customer.Country == "Poland")
-            {
-                taxRate = 0.23m;
-            }
-            else if (customer.Country == "Germany")
-            {
-                taxRate = 0.19m;
-            }
-            else if (customer.Country == "Czech Republic")
-            {
-                taxRate = 0.21m;
-            }
-            else if (customer.Country == "Norway")
-            {
-                taxRate = 0.25m;
-            }
-
+            //PODATKI
+            decimal taxRate = _taxCalculator.CalculateTaxRate(customer.Country);
             decimal taxBase = subtotalAfterDiscount + supportFee + paymentFee;
             decimal taxAmount = taxBase * taxRate;
             decimal finalAmount = taxBase + taxAmount;
